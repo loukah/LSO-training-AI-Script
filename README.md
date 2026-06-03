@@ -1,6 +1,9 @@
-# LSO Training AI Script
+# Carrier Lnading trainer LSO 
 
-Scripts Lua pour DCS afin de preparer un systeme de notation LSO sur pistes terrestres.
+Hey, voici une solution normalemnt simple pour les personnes voulants s'entrainer aux appontages sur des pistes comme le font les pilotes aeronavale des differente marine du monde.
+Dans ce code vous trouverez un Airport Locator qui permet de localiser l'aeroport et la piste utiliser pour l'appontage puis le systeme de notation du LSO qui vous permet de bous faire guider lors de la phase d'apporche mais aussi de vous noter sur la qualité de votre approche et appontage.
+
+Ce fichier a était entierment codé avec Codex et Claude code due a mon manque certain dans le domaine du codage informatique ! a la base conçu pour moi je pense qu'il peux servir a d'autre gens que moi. 
 
 ## Fichiers
 
