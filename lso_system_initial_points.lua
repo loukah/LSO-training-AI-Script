@@ -15,24 +15,35 @@
 --   lat=150      lateral detection half-width in meters at threshold
 --   fan=0.18     extra lateral detection per meter of distance
 --   minspd=105 maxspd=150 optional speed window in knots
+--   onspeed=135 spdtol=8 optional target speed if no AoA data is available
+--   waveoff=1    enable automatic wave-off calls near the runway
+--   axis=auto    heading axis mode; auto tries dcs and legacy
+--   fliplineup=1 invert left/right guidance if needed
 
 LSO = LSO or {}
 
-LSO.version = "2026-06-03-trigger-zones"
+LSO.version = "2026-06-03-lso-guidance-lineup-fix"
 LSO.prefix = "LSO:"
-LSO.refreshSeconds = 1.0
-LSO.messageSeconds = 4.0
+LSO.refreshSeconds = 0.5
+LSO.messageSeconds = 3.0
 LSO.crossingDistance = 35
 LSO.maxRunwayHeadingError = 15
+LSO.maxSamples = 480
 LSO.default = {
   gs = 3.5,
   width = 45,
   range = 5000,
   lat = 150,
   fan = 0.18,
+  scoreRange = 1850,
+  waveoffDistance = 900,
+  waveoff = true,
   elev = nil,
   minspd = nil,
   maxspd = nil,
+  onspeed = nil,
+  spdtol = 8,
+  flipLineup = true,
 }
 
 LSO.sites = {}
@@ -58,11 +69,27 @@ local function tonumberOrNil(v)
   return tonumber(normalized)
 end
 
+local function boolOption(v, default)
+  if v == nil or v == "" then return default end
+  local text = lower(v)
+  if text == "0" or text == "false" or text == "off" or text == "no" or text == "non" then return false end
+  if text == "1" or text == "true" or text == "on" or text == "yes" or text == "oui" then return true end
+  return default
+end
+
 local function runwayNameFromCap(cap)
   local runway = math.floor(((cap % 360) + 5) / 10)
   if runway == 0 then runway = 36 end
   if runway > 36 then runway = runway - 36 end
   return string.format("RWY%02d", runway)
+end
+
+local function reciprocalCap(cap)
+  return (cap + 180) % 360
+end
+
+local function formatCap(cap)
+  return string.format("%03d", math.floor((cap % 360) + 0.5) % 360)
 end
 
 local function angleDiff(a, b)
@@ -155,11 +182,21 @@ local function parseName(name)
   cfg.range = tonumberOrNil(cfg.range) or LSO.default.range
   cfg.lat = tonumberOrNil(cfg.lat) or LSO.default.lat
   cfg.fan = tonumberOrNil(cfg.fan) or LSO.default.fan
+  cfg.scoreRange = tonumberOrNil(cfg.score or cfg.scorerange or cfg.groove) or LSO.default.scoreRange
+  cfg.waveoffDistance = tonumberOrNil(cfg.waveoffdist or cfg.waveoffrange) or LSO.default.waveoffDistance
+  cfg.waveoff = boolOption(cfg.waveoff, LSO.default.waveoff)
   cfg.elev = tonumberOrNil(cfg.elev)
   cfg.dx = tonumberOrNil(cfg.dx) or 0
   cfg.dz = tonumberOrNil(cfg.dz) or 0
   cfg.minspd = tonumberOrNil(cfg.minspd)
   cfg.maxspd = tonumberOrNil(cfg.maxspd)
+  cfg.onspeed = tonumberOrNil(cfg.onspeed or cfg.speed or cfg.spd)
+  cfg.spdtol = tonumberOrNil(cfg.spdtol or cfg.speedtol) or LSO.default.spdtol
+  cfg.axis = lower(cfg.axis or cfg.axes or "auto")
+  cfg.flipLineup = boolOption(cfg.fliplineup or cfg.invertlineup or cfg.flipaxis, LSO.default.flipLineup)
+  if cfg.scoreRange <= 1 then cfg.scoreRange = LSO.default.scoreRange end
+  if cfg.waveoffDistance <= 1 then cfg.waveoffDistance = LSO.default.waveoffDistance end
+  if cfg.spdtol < 0 then cfg.spdtol = LSO.default.spdtol end
   cfg.corner = lower(cfg.corner or cfg.edge or cfg.side or "")
 
   if not cfg.cap then
@@ -172,9 +209,33 @@ end
 
 local function headingVectors(capDeg)
   local r = math.rad(capDeg)
+  -- DCS Vec3 uses x for north/south and z for east/west.
+  -- Heading 000 moves toward +x, heading 090 moves toward +z.
+  local forward = { x = math.cos(r), z = math.sin(r) }
+  local right = { x = -math.sin(r), z = math.cos(r) }
+  return forward, right
+end
+
+local function legacyHeadingVectors(capDeg)
+  local r = math.rad(capDeg)
   local forward = { x = math.sin(r), z = math.cos(r) }
   local right = { x = math.cos(r), z = -math.sin(r) }
   return forward, right
+end
+
+local function buildHeadingAxes(capDeg, preferredAxis)
+  local dcsForward, dcsRight = headingVectors(capDeg)
+  local legacyForward, legacyRight = legacyHeadingVectors(capDeg)
+  local axes = {
+    { name = "dcs", forward = dcsForward, right = dcsRight },
+    { name = "legacy", forward = legacyForward, right = legacyRight },
+  }
+
+  if preferredAxis == "legacy" or preferredAxis == "old" then
+    axes[1], axes[2] = axes[2], axes[1]
+  end
+
+  return axes
 end
 
 local function shiftedThreshold(point, cfg)
@@ -207,7 +268,8 @@ local function shiftedThreshold(point, cfg)
 end
 
 local function makeSite(point, cfg, source)
-  local forward, right = headingVectors(cfg.cap)
+  local axes = buildHeadingAxes(cfg.cap, cfg.axis)
+  local forward, right = axes[1].forward, axes[1].right
   local threshold = shiftedThreshold(point, cfg)
   return {
     name = cfg.name,
@@ -219,11 +281,19 @@ local function makeSite(point, cfg, source)
     range = cfg.range,
     lat = cfg.lat,
     fan = cfg.fan,
+    scoreRange = cfg.scoreRange,
+    waveoffDistance = cfg.waveoffDistance,
+    waveoff = cfg.waveoff,
     minspd = cfg.minspd,
     maxspd = cfg.maxspd,
+    onspeed = cfg.onspeed,
+    spdtol = cfg.spdtol,
+    flipLineup = cfg.flipLineup,
     threshold = threshold,
     forward = forward,
     right = right,
+    axes = axes,
+    axisMode = cfg.axis,
   }
 end
 
@@ -429,9 +499,29 @@ local function startupReport()
     if site.resolveMethod then
       matchInfo = matchInfo .. " | " .. site.resolveMethod
     end
+    if site.axisMode and site.axisMode ~= "auto" then
+      matchInfo = matchInfo .. " | axis " .. site.axisMode
+    else
+      matchInfo = matchInfo .. " | axis auto"
+    end
+    if site.flipLineup then
+      matchInfo = matchInfo .. " | lineup inverse"
+    else
+      matchInfo = matchInfo .. " | lineup normal"
+    end
+    matchInfo = matchInfo .. string.format(" | zone %.0fm +/-%.0f->%.0fm", site.range, site.lat, site.lat + site.range * site.fan)
+    if site.onspeed then
+      matchInfo = matchInfo .. string.format(" | on-speed %.0f+/-%.0f kt", site.onspeed, site.spdtol)
+    elseif site.minspd or site.maxspd then
+      matchInfo = matchInfo .. string.format(" | vitesse %.0f-%.0f kt", site.minspd or 0, site.maxspd or 999)
+    end
+    if not site.waveoff then
+      matchInfo = matchInfo .. " | waveoff off"
+    end
     table.insert(lines, string.format(
-      "- %s | cap %.0f | seuil X %.0f Z %.0f | elev %.0fm%s",
-      siteDisplayName(site), site.cap, site.threshold.x, site.threshold.z, site.threshold.y, matchInfo
+      "- %s | detection cote %s -> guidage cap %s | seuil X %.0f Z %.0f | elev %.0fm%s",
+      siteDisplayName(site), formatCap(reciprocalCap(site.cap)), formatCap(site.cap),
+      site.threshold.x, site.threshold.z, site.threshold.y, matchInfo
     ))
   end
 
@@ -491,30 +581,59 @@ local function unitName(unit)
   return unit:getPlayerName() or unit:getName() or "unknown"
 end
 
-local function speedKnots(unit)
-  local v = unit:getVelocity()
+local function speedKnots(unit, velocity)
+  local v = velocity or unit:getVelocity()
   local ms = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
   return ms * 1.94384449
 end
 
-local function sample(unit, site)
+local function clamp(value, minValue, maxValue)
+  if value < minValue then return minValue end
+  if value > maxValue then return maxValue end
+  return value
+end
+
+local function sample(unit, site, axis)
+  axis = axis or { name = "dcs", forward = site.forward, right = site.right }
   local p = unit:getPoint()
+  local v = unit:getVelocity()
   local rx = p.x - site.threshold.x
   local rz = p.z - site.threshold.z
-  local forwardMeters = rx * site.forward.x + rz * site.forward.z
+  local forwardMeters = rx * axis.forward.x + rz * axis.forward.z
   local dist = -forwardMeters
-  local lineup = rx * site.right.x + rz * site.right.z
+  local lineup = rx * axis.right.x + rz * axis.right.z
   local alt = p.y - site.threshold.y
   local idealAlt = math.tan(math.rad(site.gs)) * math.max(dist, 0)
   local gsError = alt - idealAlt
-  local spd = speedKnots(unit)
+  local spd = speedKnots(unit, v)
+  local closure = (v.x * axis.forward.x + v.z * axis.forward.z) * 1.94384449
+  local lateralRate = (v.x * axis.right.x + v.z * axis.right.z) * 1.94384449
+  if site.flipLineup then
+    lineup = -lineup
+    lateralRate = -lateralRate
+  end
+  local sinkFpm = -(v.y or 0) * 196.850394
+  local gsAngle = 0
+  local lineupAngle = 0
+  if dist > 1 then
+    gsAngle = math.deg(math.atan(alt / dist))
+    lineupAngle = math.deg(math.atan(lineup / dist))
+  end
   return {
     dist = dist,
     lineup = lineup,
     alt = alt,
     idealAlt = idealAlt,
     gsError = gsError,
+    gsAngle = gsAngle,
+    gsAngleError = gsAngle - site.gs,
+    lineupAngle = lineupAngle,
     spd = spd,
+    closure = closure,
+    lateralRate = lateralRate,
+    sinkFpm = sinkFpm,
+    time = timer.getTime(),
+    axisName = axis.name,
   }
 end
 
@@ -526,34 +645,168 @@ local function isInsideEnvelope(s, site)
   return true
 end
 
+local function axisByName(site, axisName)
+  if not axisName then return nil end
+  for _, axis in ipairs(site.axes or {}) do
+    if axis.name == axisName then return axis end
+  end
+  return nil
+end
+
+local function bestSampleForSite(unit, site, preferredAxisName)
+  local best
+  local preferredAxis = axisByName(site, preferredAxisName)
+
+  if preferredAxis then
+    local s = sample(unit, site, preferredAxis)
+    if isInsideEnvelope(s, site) then return s end
+  end
+
+  for _, axis in ipairs(site.axes or {}) do
+    if not preferredAxis or axis.name ~= preferredAxis.name then
+      local s = sample(unit, site, axis)
+      if isInsideEnvelope(s, site) and (not best or math.abs(s.lineup) < math.abs(best.lineup)) then
+        best = s
+      end
+    end
+  end
+
+  return best
+end
+
+local function passPhase(s, site)
+  local d = math.max(s.dist, 0)
+  if d > site.scoreRange then return "initiale" end
+  if d > site.scoreRange * 0.55 then return "depart groove" end
+  if d > site.scoreRange * 0.25 then return "milieu" end
+  if d > LSO.crossingDistance then return "proche" end
+  return "seuil"
+end
+
+local function lineTolerance(s, site)
+  local d = math.max(s.dist, 0)
+  return math.max(site.width * 0.22, 8 + d * 0.008)
+end
+
+local function gsTolerance(s)
+  local d = math.max(s.dist, 0)
+  return math.max(5, d * 0.010)
+end
+
+local function speedError(s, site)
+  if site.onspeed then
+    return math.max(0, math.abs(s.spd - site.onspeed) - site.spdtol)
+  end
+  if site.minspd and s.spd < site.minspd then
+    return site.minspd - s.spd
+  end
+  if site.maxspd and s.spd > site.maxspd then
+    return s.spd - site.maxspd
+  end
+  return 0
+end
+
+local function speedCallout(s, site)
+  if site.onspeed then
+    local delta = s.spd - site.onspeed
+    if delta < -site.spdtol then return "lent" end
+    if delta > site.spdtol then return "rapide" end
+    return "on-speed"
+  end
+  if site.minspd and s.spd < site.minspd then return "lent" end
+  if site.maxspd and s.spd > site.maxspd then return "rapide" end
+  if site.minspd or site.maxspd then return "vitesse OK" end
+  return nil
+end
+
 local function callout(s, site)
-  local bits = {}
-  local lineLimit = math.max(8, site.width * 0.25)
-  local gsLimit = math.max(4, s.dist * 0.012)
+  local bits = { passPhase(s, site) }
+  local lineLimit = lineTolerance(s, site)
+  local gsLimit = gsTolerance(s)
+  local stable = true
 
   if s.lineup > lineLimit then
-    table.insert(bits, "droite")
+    stable = false
+    if s.lineup > lineLimit * 2 then
+      table.insert(bits, "trop a droite, corrige gauche")
+    else
+      table.insert(bits, "droite, corrige gauche")
+    end
   elseif s.lineup < -lineLimit then
-    table.insert(bits, "gauche")
+    stable = false
+    if s.lineup < -lineLimit * 2 then
+      table.insert(bits, "trop a gauche, corrige droite")
+    else
+      table.insert(bits, "gauche, corrige droite")
+    end
   else
     table.insert(bits, "axe")
   end
 
   if s.gsError > gsLimit then
-    table.insert(bits, "haut")
+    stable = false
+    if s.gsError > gsLimit * 2 then
+      table.insert(bits, "tres haut")
+    else
+      table.insert(bits, "haut")
+    end
   elseif s.gsError < -gsLimit then
-    table.insert(bits, "bas")
+    stable = false
+    if s.gsError < -gsLimit * 2 then
+      table.insert(bits, "tres bas")
+    else
+      table.insert(bits, "bas")
+    end
   else
     table.insert(bits, "plan")
   end
 
-  if site.minspd and s.spd < site.minspd then
-    table.insert(bits, "lent")
-  elseif site.maxspd and s.spd > site.maxspd then
-    table.insert(bits, "rapide")
+  local speedText = speedCallout(s, site)
+  if speedText then
+    if speedText ~= "on-speed" and speedText ~= "vitesse OK" then stable = false end
+    table.insert(bits, speedText)
+  end
+
+  if stable then
+    table.insert(bits, "continue")
   end
 
   return table.concat(bits, " / ")
+end
+
+local function unsafeDecision(s, site)
+  if not site.waveoff or s.dist > site.waveoffDistance or s.dist < -20 then return nil end
+
+  local d = math.max(s.dist, 0)
+  local lineWave = math.max(site.width * 0.9, 20 + d * 0.04)
+  local lowWave = math.max(16, d * 0.035)
+  local highWave = lowWave * 1.7
+
+  if math.abs(s.lineup) > lineWave then
+    return "WAVE OFF: axe dangereux"
+  end
+  if s.gsError < -lowWave then
+    return "WAVE OFF: trop bas"
+  end
+  if d < 400 and s.gsError > highWave then
+    return "WAVE OFF: trop haut proche seuil"
+  end
+  if site.onspeed and s.spd < site.onspeed - site.spdtol - 18 then
+    return "WAVE OFF: trop lent"
+  end
+  if site.minspd and s.spd < site.minspd - 12 then
+    return "WAVE OFF: trop lent"
+  end
+  if d < 550 and s.sinkFpm > 1800 then
+    return "WAVE OFF: vario trop fort"
+  end
+
+  return nil
+end
+
+local function sampleWeight(s, site)
+  local d = clamp(math.max(s.dist, 0), 0, site.scoreRange)
+  return 1 + (1 - d / site.scoreRange) * 2.5
 end
 
 local function scoreTrack(track)
@@ -561,39 +814,81 @@ local function scoreTrack(track)
     return "NO GRADE", 0, "pas assez de donnees"
   end
 
-  local totalLine, totalGs, maxLine, maxGs, speedFaults = 0, 0, 0, 0, 0
+  local site = track.site
+  local totalWeight = 0
+  local totalLine, totalGs, totalSpeed = 0, 0, 0
+  local maxLine, maxGs, maxSpeed = 0, 0, 0
+  local faultCount = 0
+  local closest
+
   for _, s in ipairs(track.samples) do
     local al = math.abs(s.lineup)
     local ag = math.abs(s.gsError)
-    totalLine = totalLine + al
-    totalGs = totalGs + ag
+    local se = speedError(s, site)
+    local w = sampleWeight(s, site)
+
+    totalWeight = totalWeight + w
+    totalLine = totalLine + al * w
+    totalGs = totalGs + ag * w
+    totalSpeed = totalSpeed + se * w
+
     if al > maxLine then maxLine = al end
     if ag > maxGs then maxGs = ag end
-    if track.site.minspd and s.spd < track.site.minspd then speedFaults = speedFaults + 1 end
-    if track.site.maxspd and s.spd > track.site.maxspd then speedFaults = speedFaults + 1 end
+    if se > maxSpeed then maxSpeed = se end
+    if al > lineTolerance(s, site) * 1.8 then faultCount = faultCount + 1 end
+    if ag > gsTolerance(s) * 1.8 then faultCount = faultCount + 1 end
+    if se > 12 then faultCount = faultCount + 1 end
+
+    if not closest or math.abs(s.dist) < math.abs(closest.dist) then
+      closest = s
+    end
   end
 
-  local n = #track.samples
-  local avgLine = totalLine / n
-  local avgGs = totalGs / n
+  if totalWeight <= 0 then
+    return "NO GRADE", 0, "pas assez de donnees"
+  end
+
+  local avgLine = totalLine / totalWeight
+  local avgGs = totalGs / totalWeight
+  local avgSpeed = totalSpeed / totalWeight
   local score = 100
-  score = score - avgLine * 0.9 - maxLine * 0.25
-  score = score - avgGs * 1.4 - maxGs * 0.35
-  score = score - speedFaults * 2
+  score = score - avgLine * 0.45 - maxLine * 0.13
+  score = score - avgGs * 0.80 - maxGs * 0.22
+  score = score - avgSpeed * 0.60 - maxSpeed * 0.20
+  score = score - faultCount * 1.5
+  if track.waveoffReason then score = math.min(score, 45) end
+  if not track.crossed and not track.waveoffReason then score = math.min(score, 50) end
   if score < 0 then score = 0 end
 
-  local grade = "OK"
-  if score >= 88 and maxLine < 15 and maxGs < 10 then
+  local grade
+  if track.waveoffReason then
+    grade = "WAVE OFF"
+  elseif not track.crossed then
+    grade = "NO GRADE"
+  elseif score >= 90 and maxLine < 18 and maxGs < 12 and maxSpeed < 8 then
     grade = "OK 3"
-  elseif score >= 75 then
+  elseif score >= 82 then
+    grade = "OK"
+  elseif score >= 70 then
     grade = "FAIR"
   elseif score >= 55 then
     grade = "NO GRADE"
   else
-    grade = "WAVE OFF"
+    grade = "CUT PASS"
   end
 
-  local details = string.format("score %.0f | moy axe %.0fm | moy plan %.0fm", score, avgLine, avgGs)
+  local thresholdDetails = ""
+  if closest then
+    thresholdDetails = string.format(
+      "\nSeuil: axe %+.0fm | plan %+.0fm | %.0f kt | vario %.0f ft/min",
+      closest.lineup, closest.gsError, closest.spd, closest.sinkFpm
+    )
+  end
+
+  local details = string.format(
+    "Score %.0f | Axe moy %.0fm max %.0fm\nPlan moy %.0fm max %.0fm | Vitesse err moy %.0f kt max %.0f kt%s",
+    score, avgLine, maxLine, avgGs, maxGs, avgSpeed, maxSpeed, thresholdDetails
+  )
   return grade, score, details
 end
 
@@ -605,9 +900,10 @@ local function finishTrack(id, reason)
   local unit = track.unit
   if unit and Unit.isExist(unit) then
     local grade, _, details = scoreTrack(track)
+    local endReason = track.waveoffReason or reason or ""
     trigger.action.outTextForUnit(unit:getID(), string.format(
-      "LSO %s: %s\n%s\n%s",
-      track.site.name, grade, details, reason or ""
+      "LSO %s: %s\n%s\nFin: %s",
+      track.site.name, grade, details, endReason
     ), 12)
   end
 end
@@ -617,22 +913,31 @@ local function updateUnit(unit)
   local id = unitId(unit)
   if not id then return end
 
+  local track = LSO.tracks[id]
   local bestSite, bestSample
   for _, site in ipairs(LSO.sites) do
-    local s = sample(unit, site)
-    if isInsideEnvelope(s, site) and (not bestSample or s.dist < bestSample.dist) then
+    local preferredAxisName = track and track.site == site and track.axisName or nil
+    local s = bestSampleForSite(unit, site, preferredAxisName)
+    if s and (not bestSample or s.dist < bestSample.dist) then
       bestSite, bestSample = site, s
     end
   end
 
-  local track = LSO.tracks[id]
   if bestSite and bestSample then
-    if not track or track.site ~= bestSite then
+    if track and track.site ~= bestSite then
+      finishTrack(id, "changement piste")
+      track = nil
+    end
+
+    if not track then
       track = {
         unit = unit,
         site = bestSite,
         samples = {},
         lastMessage = 0,
+        lastPhase = "",
+        axisName = bestSample.axisName,
+        waveoffReason = nil,
         crossed = false,
       }
       LSO.tracks[id] = track
@@ -640,20 +945,42 @@ local function updateUnit(unit)
         LSO.startupShownTo[id] = true
         trigger.action.outTextForUnit(id, LSO.startupMessage, 12)
       end
-      trigger.action.outTextForUnit(id, "LSO " .. bestSite.name .. ": contact", 5)
-      log("Tracking " .. unitName(unit) .. " on " .. bestSite.name)
+      trigger.action.outTextForUnit(id, string.format(
+        "LSO %s: entree zone de detection\nDetection cote %s | Guidage cap %s | Axe %s | Dist %.0fm | Lineup %+.0fm | Plan %+.0fm | %.0f kt",
+        siteDisplayName(bestSite), formatCap(reciprocalCap(bestSite.cap)), formatCap(bestSite.cap),
+        tostring(bestSample.axisName or "auto"), bestSample.dist, bestSample.lineup,
+        bestSample.gsError, bestSample.spd
+      ), 8)
+      log("Tracking " .. unitName(unit) .. " on " .. bestSite.name .. " axis " .. tostring(bestSample.axisName))
     end
 
+    track.axisName = track.axisName or bestSample.axisName
+
     table.insert(track.samples, bestSample)
-    if #track.samples > 240 then table.remove(track.samples, 1) end
+    if #track.samples > LSO.maxSamples then table.remove(track.samples, 1) end
 
     local now = timer.getTime()
-    if now - track.lastMessage >= LSO.messageSeconds and bestSample.dist > LSO.crossingDistance then
+    local unsafe = unsafeDecision(bestSample, bestSite)
+    if unsafe and not track.waveoffReason then
+      track.waveoffReason = unsafe
       track.lastMessage = now
       trigger.action.outTextForUnit(id, string.format(
-        "LSO %s: %s\nDist %.0fm | Axe %.0fm | Plan %+0.fm | %.0f kt",
+        "LSO %s: %s\nDist %.0fm | Axe %+.0fm | Plan %+.0fm | %.0f kt | Vario %.0f",
+        bestSite.name, unsafe, bestSample.dist, bestSample.lineup,
+        bestSample.gsError, bestSample.spd, bestSample.sinkFpm
+      ), 8)
+      log(unitName(unit) .. " waveoff on " .. bestSite.name .. ": " .. unsafe)
+    end
+
+    local phase = passPhase(bestSample, bestSite)
+    local shouldTalk = now - track.lastMessage >= LSO.messageSeconds or phase ~= track.lastPhase
+    if shouldTalk and bestSample.dist > LSO.crossingDistance and not track.waveoffReason then
+      track.lastMessage = now
+      track.lastPhase = phase
+      trigger.action.outTextForUnit(id, string.format(
+        "LSO %s: %s\nDist %.0fm | Axe %+.0fm | Plan %+.0fm | %.0f kt | Vario %.0f",
         bestSite.name, callout(bestSample, bestSite), bestSample.dist,
-        bestSample.lineup, bestSample.gsError, bestSample.spd
+        bestSample.lineup, bestSample.gsError, bestSample.spd, bestSample.sinkFpm
       ), 3)
     end
 
