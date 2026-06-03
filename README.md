@@ -1,4 +1,4 @@
-# Carrier Lnading trainer LSO 
+# Carrier Landing trainer LSO 
 
 Salut,
 
