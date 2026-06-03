@@ -1,9 +1,12 @@
 # Carrier Lnading trainer LSO 
 
-Hey, voici une solution normalemnt simple pour les personnes voulants s'entrainer aux appontages sur des pistes comme le font les pilotes aeronavale des differente marine du monde.
-Dans ce code vous trouverez un Airport Locator qui permet de localiser l'aeroport et la piste utiliser pour l'appontage puis le systeme de notation du LSO qui vous permet de bous faire guider lors de la phase d'apporche mais aussi de vous noter sur la qualité de votre approche et appontage.
+Salut,
 
-Ce fichier a était entierment codé avec Codex et Claude code due a mon manque certain dans le domaine du codage informatique ! a la base conçu pour moi je pense qu'il peux servir a d'autre gens que moi. 
+Voici une solution normalement simple pour les personnes souhaitant s’entraîner aux appontages sur piste, comme le font les pilotes de l’aéronavale des différentes marines du monde.
+
+Dans ce code, vous trouverez un Airport Locator, qui permet de localiser l’aéroport et la piste utilisés pour l’appontage, ainsi qu’un système de notation LSO. Celui-ci vous guide pendant la phase d’approche et vous attribue une note selon la qualité de votre approche et de votre appontage.
+
+Ce fichier a été entièrement codé avec Codex et Claude Code, en raison de mon manque d’expérience dans le domaine du développement informatique. À l’origine conçu pour mon usage strictement personnel, je pense qu’il peut aussi être utile à d’autres personnes.
 
 ## Fichiers
 
