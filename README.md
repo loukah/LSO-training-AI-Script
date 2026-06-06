@@ -2,11 +2,16 @@
 
 Salut,
 
-Voici une solution normalement simple pour les personnes souhaitant s’entraîner aux appontages sur piste, comme le font les pilotes de l’aéronavale des différentes marines du monde.
+Voici un petit mod contenant un IFLOLS, que j’ai adapté à partir d’un autre mod créé par un membre de la communauté, ainsi qu’un système de guidage et de notation textuelle et audio pour l’entraînement à l’appontage sur piste.
 
-Dans ce code, vous trouverez un Airport Locator, qui permet de localiser l’aéroport et la piste utilisés pour l’appontage, ainsi qu’un système de notation LSO. Celui-ci vous guide pendant la phase d’approche et vous attribue une note selon la qualité de votre approche et de votre appontage.
+L’objectif est de permettre aux personnes souhaitant s’entraîner dans des conditions proches de l’entraînement des pilotes de l’aéronavale de le faire sur une piste terrestre. Cela peut aussi convenir à ceux qui, comme moi, préfèrent s’entraîner sur le plancher des vaches plutôt que sur un bateau qui bouge.
 
-Ce fichier a été entièrement codé avec Codex et Claude Code, en raison de mon manque d’expérience dans le domaine du développement informatique. À l’origine conçu pour mon usage strictement personnel, je pense qu’il peut aussi être utile à d’autres personnes.
+Ce fichier a été entièrement codé avec Codex et Claude Code, en raison de mon manque d’expérience en développement informatique. À l’origine, il était conçu pour mon usage strictement personnel, mais je pense qu’il peut aussi être utile à d’autres personnes.
+
+IFLOLS de base :
+https://www.digitalcombatsimulator.com/fr/files/3330472/
+
+Un grand merci à NYChancellor, que je n’ai malheureusement pas réussi à contacter et qui a créer L'IFLOS de base. <3
 
 ## Fichiers
 
